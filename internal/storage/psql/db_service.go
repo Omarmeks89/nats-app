@@ -1,4 +1,4 @@
-package main
+package psql
 
 import (
     "context"
@@ -74,6 +74,9 @@ func (psql *PostgreDB) SelectMany(query string) ([]any, error) {
     //...
 }
 
-func InitDB(ctx context.Context, s any) (*DBAdapter, error) {
+// init new db adapter
+// ctx -> current Context
+// s -> db settings
+func NewDB(ctx context.Context, s any) (*DBAdapter, error) {
     //...
 }
