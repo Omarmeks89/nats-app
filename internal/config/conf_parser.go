@@ -28,9 +28,18 @@ type HTTPConfig struct {
     AliveTime time.Duration `yaml:"alive_time"`
 }
 
+type DBEngineConf struct {
+    Port string `yaml:"port"`
+    Host string `yaml:"host"`
+    DBName string `yaml:"dbname"`
+    passwd string `yaml:"passwd"`
+    db_admin string `yaml:"db_admin"`
+    MaxPool int `yaml:"max_pool"`
+    Timeout time.Duration `yaml:"timeout"`
+}
 // build config struct
-func MustBuildConfig() (*AppConfig, error) {
-    conf_path := os.Getenv("N_APP_CONFIG")
+func MustBuildConfig(envKey string) (*AppConfig, error) {
+    conf_path := os.Getenv(envKey)
         if conf_path == "" {
             return &AppConfig{}, errors.New("path to config not set")
         }
