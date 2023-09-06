@@ -15,8 +15,8 @@ type AppConfig struct {
     Encoding string `yaml:"encoding" env-default:"utf-8"`
     ApiVersion string `yaml:"api_version"`
     OnPanic string `yaml:"on_panic"`
-    // embed server config
-    HTTPConfig `yaml:"http_server"`
+    HTTPConf HTTPConfig `yaml:"http_server"`
+    DBConf DBEngineConf `yaml:"dbengine"`
 }
 
 // http-server config
@@ -24,19 +24,23 @@ type HTTPConfig struct {
     Port string `yaml:"port"`
     Host string `yaml:"host"`
     ResponceTimeout time.Duration `yaml:"resp_timeout"`
-    KeppAlive bool `yaml:"keep_alive"`
+    KeepAlive bool `yaml:"keep_alive"`
     AliveTime time.Duration `yaml:"alive_time"`
 }
 
+// db config
 type DBEngineConf struct {
+    Driver string `yaml:"driver"`
     Port string `yaml:"port"`
     Host string `yaml:"host"`
     DBName string `yaml:"dbname"`
-    passwd string `yaml:"passwd"`
-    db_admin string `yaml:"db_admin"`
+    Passwd string `yaml:"passwd"`
+    Db_admin string `yaml:"db_admin"`
     MaxPool int `yaml:"max_pool"`
     Timeout time.Duration `yaml:"timeout"`
+    ConnRetry int `yaml:"conn_retry"`
 }
+
 // build config struct
 func MustBuildConfig(envKey string) (*AppConfig, error) {
     conf_path := os.Getenv(envKey)

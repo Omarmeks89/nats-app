@@ -2,22 +2,25 @@ package psql
 
 import (
     "context"
-    "time"
-    // "github.com/jackc/pgx/v5"
+    "fmt"
+    "errors"
+    "github.com/jackc/pgx/v5/pgxpool"
+    "nats_app/internal/config"
     
 )
 
 // postgres adapter implementation
 type PostgreDB struct {
     Ctx context.Context
-    MaxPool uint
-    Timeout time.Duration
-    pool any
+    pool *pgxpool.Pool
 }
 
-func (psql *PostgreDB) Connect(ctx context.Context) (bool, error) {
-    //...
-    return false, nil
+// method, that check db conn alive
+func (psql *PostgreDB) Test() error {
+    if NoPing := (*psql.pool).Ping((*psql).Ctx); NoPing != nil {
+        return fmt.Errorf("Database is not responding... ERR: %w", NoPing)
+    }
+    return nil
 }
 
 func (psql *PostgreDB) Begin() error {
@@ -50,10 +53,54 @@ func (psql *PostgreDB) FetchMany(query string) (any, error) {
     return false, nil
 }
 
+// validate db tokens
+func validateDbUrlTokens(t ...string) error {
+    for _, token := range t {
+        if token == "" {
+            return errors.New("One of url tokens is empty")
+        }
+    }
+    return nil
+}
+
+// building DB url from config
+func buildDbUrl(s *config.DBEngineConf) (string, error) {
+    if err := validateDbUrlTokens(
+        (*s).Driver,
+        (*s).Db_admin,
+        (*s).Passwd,
+        (*s).Host,
+        (*s).Port,
+        (*s).DBName,
+    ); err != nil {
+        return "", errors.New("Invalid db credentials")
+    }
+    return fmt.Sprintf(
+        "%s://%s:%s@%s:%s/%s",
+        (*s).Driver,
+        (*s).Db_admin,
+        (*s).Passwd,
+        (*s).Host,
+        (*s).Port,
+        (*s).DBName,
+    ), nil
+}
+
 // init new db adapter
 // ctx -> current Context
 // s -> db settings
-func NewDB(ctx context.Context, s any) (*PostgreDB, error) {
-    //...
-    return &PostgreDB{}, nil
+func NewDB(ctx context.Context, s *config.DBEngineConf) (*PostgreDB, error) {
+    DbUrl, CredErr := buildDbUrl(s)
+    if CredErr != nil {
+        return &PostgreDB{}, fmt.Errorf("Can`t create connection pool. Error: %w", CredErr)
+    }
+    for i := 0; i < (*s).ConnRetry; i++ {
+        pool, connErr := pgxpool.New(ctx, DbUrl)
+        if connErr != nil {
+            continue
+        } else {
+            return &PostgreDB{ctx, pool}, nil
+        }
+    }
+    return &PostgreDB{}, errors.New("Can`t connect to DB")
 }

@@ -3,6 +3,7 @@ package main
 import (
     "os"
     "fmt"
+    "context"
     "nats_app/internal/config"
     "nats_app/internal/storage/psql"
     api "nats_app/internal/http-server/handlers/api"
@@ -30,12 +31,23 @@ func main () {
         fmt.Println(err)
         os.Exit(1)
     }
-    // fmt.Printf("builded: %+v\n", conf)
+    context, cancel := context.WithTimeout(context.Background(), conf.HTTPConf.ResponceTimeout)
+    // TODO move cancel to teardown func.
+    defer cancel()
     logger.Info("Bootstrap...")
     logger.Debug("Debug messages enabled...")
-    var dbAdapter psql.PostgreDB = psql.PostgreDB{}
+    dbAdapter, dbBootErr := psql.NewDB(context, &conf.DBConf)
+    if dbBootErr != nil {
+        fmt.Println(dbBootErr)
+        os.Exit(1)
+    }
+    logger.Debug("Connection to db created...")
+    if NoPing := dbAdapter.Test(); NoPing != nil {
+        fmt.Println(NoPing)
+        os.Exit(1)
+    }
     router := chi.NewRouter()
     router.Use(middleware.RequestID)
     router.Use(middleware.Recoverer)
-    router.Get("/url", api.GetOrder(logger, RequestValidator, &dbAdapter))
+    router.Get("/url", api.GetOrder(logger, RequestValidator, dbAdapter))
 }
