@@ -7,10 +7,8 @@ import (
     "github.com/go-chi/chi/v5/middleware"
     "github.com/go-playground/validator/v10"
     "log/slog"
-    "nats_app/internal/storage"
+    "nats_app/internal/services"
 )
-
-var RequestValidator = validator.New()
 
 // we send only OrderId
 type Request struct {
@@ -26,7 +24,7 @@ type Response struct {
 func GetOrder(
     logger *slog.Logger,
     v *validator.Validate,
-    db storage.DBAdapter,
+    ca *services.AppCache,
     ) http.HandlerFunc {
     return func(wr http.ResponseWriter, req *http.Request) {
         // const for idenfication
@@ -41,7 +39,6 @@ func GetOrder(
         err := render.DecodeJSON(req.Body, &request)
         if err != nil {
             logger.Error("Request decoding failed", err)
-            // TODO -> write RaiseError
             render.JSON(wr, req, "can`t decode request")
             return
         }
@@ -53,9 +50,17 @@ func GetOrder(
             return
         }
         // try fetch data from cache
+        order, err := (*ca).Get(request.OrderId)
+        if err != nil {
+            logger.Error("Invalid order_id", err)
+            render.JSON(wr, req, "order_id not found")
+            return
+        }
+        _ = order
         logger.Info("order found.")
         render.JSON(wr, req, Response{
             RespReport: RespReport{},
+            // Order: order,
         })
         return
     }

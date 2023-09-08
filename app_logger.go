@@ -1,10 +1,9 @@
 package main
 
 import (
-    "fmt"
     "os"
     "log/slog"
-    "errors"
+    "log"
 )
 
 const (
@@ -14,7 +13,7 @@ const (
 )
 
 // setup new logger
-func SetupLogger(env string) (*slog.Logger, error) {
+func SetupLogger(env string) *slog.Logger {
     var logger *slog.Logger
     switch env {
     case LocalEnv:
@@ -39,7 +38,7 @@ func SetupLogger(env string) (*slog.Logger, error) {
             ),
         )
     default:
-        return logger, errors.New(fmt.Sprintf("Invalid env: %s", env))
+        log.Fatal("Env mode not allowed. Use: <local>, <dev> or <prod>.")
     }
-    return logger, nil
+    return logger
 }

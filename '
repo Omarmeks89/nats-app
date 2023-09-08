@@ -42,16 +42,12 @@ type CustOrder interface {
 }
 
 
-func (o Order) Id() string {
-    return o.oid
+func (o *Order) Id() string {
+    return (*o).oid
 }
 
-func (o Order) Payload() *[]byte {
-    return o.payload
-}
-
-func NewOrder(id string, payload *[]byte) Order {
-    return Order{id, payload}
+func (o *Order) Payload() []byte {
+    return (*o.payload)
 }
 
 type StorageInterface interface {
@@ -64,7 +60,8 @@ type StorageInterface interface {
     SaveOrder(mn interface{})
     Convert() interface{}
     FetchOrder(oid string) (interface{}, error)
-    MarkDumped(<-chan interface{})
+    MarkEvicted(ev interface{})
+    MarkAdded(ev interface{})
 }
 
 type AppStorage struct {
@@ -105,11 +102,6 @@ func (srv *AppStorage) GetChannel() <-chan CacheItem {
     return (*srv).outCh
 }
 
-// break connection with db
-func (srv *AppStorage) Disconnect() {
-    // NotImplemented
-}
-
 // restore cache if we felt down
 func (srv *AppStorage) RestoreCache(records int) {
     //...
@@ -121,7 +113,7 @@ func (srv *AppStorage) TestConnection() (bool, error) {
     mark := "AppStorage.TestConnection"
     err := (*srv).db.Test()
     if err != nil {
-        srv.log.Error(fmt.Sprintf("%s | Error: %+v", mark, err))
+        srv.log.Error(fmt.Sprintf("%s | Error: %w", mark, err))
         return false, fmt.Errorf("%s | Error: %w", mark, err)
     }
     return false, nil
@@ -167,6 +159,17 @@ func (srv *AppStorage) SaveOrder(nm *NatsMsg) {
     return
 }
 
+func (srv *AppStorage) GetLoader() func(string) (CustOrder, error) {
+    //...
+    serv := srv
+    return func(key string) (Order, error) {
+        for ord := range (*serv).FetchOrder(key) {
+            return ord, nil
+        }
+        return Order{}, fmt.Errorf("Order not found")
+    }
+}
+
 func (srv *AppStorage) FetchOrder(oid string) <-chan Order {
     // make query
     out := make(chan Order)
@@ -200,28 +203,10 @@ func (srv *AppStorage) FetchOrder(oid string) <-chan Order {
     return out
 }
 
-func (srv *AppStorage) MarkDumped(ch <-chan LogMessage) {
+func (srv *AppStorage) MarkEvicted(ev *[]string) {
     // make queries from str array for trans.
-    go func(s *AppStorage, ch <-chan LogMessage) {
-        var t Token
-        mark := "AppStorage.MarkDumpedBG"
-        (*s).log.Debug(fmt.Sprintf("%s | Started...", mark))
-        defer func(s *AppStorage, t Token) {(*s).wPool<- t}(s, t)
-        select {
-        case msg := <-ch:
-            //... handle
-            select {
-            case <-(*s.ctx).Done():
-                return
-            case t = <-(*s).wPool:
-                // start work
-                _ = t
-                _ = msg
-            }
-        case <-(*s.ctx).Done():
-            return
-        }
-    }(srv, ch)
+}
 
-    return
+func (srv *AppStorage) MarkAdded(add *[]string) {
+    // make queries from str array for trans.
 }

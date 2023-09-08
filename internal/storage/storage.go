@@ -16,7 +16,7 @@ type DBAdapter interface {
     Commit() error
     Rollback() error
     Save(query string) error
-    FetchOne(query string) (any, error)
-    FetchMany(query string) (any, error)
+    FetchOne(query string) ([]byte, error)
+    FetchMany(query string) ([]byte, error)
     Close()
 }

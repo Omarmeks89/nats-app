@@ -2,10 +2,20 @@ package nats_client
 
 import (
     "fmt"
+    "os"
     "errors"
     "time"
+    "log"
+    "log/slog"
+    "encoding/json"
+    "context"
 
     stan "github.com/nats-io/stan.go"
+    valid "github.com/go-playground/validator/v10"
+
+    "nats_app/internal/storage"
+    "nats_app/internal/services"
+    "nats_app/internal/config"
 )
 
 const (
@@ -22,90 +32,204 @@ var (
 )
 
 type Subscriber interface {
-    SubscribeDurable(ch, dur_name string, cb func(msg *stan.Msg)) error
+    SetStorageOnCallback(s services.AppStorage)
+    SetLogger(l slog.Logger)
+    RunFromLastId(id uint64)
+    RunFromTimestamp(t time.Time)
+    Run()
     Unsubscribe() error
-    Close() error
+    Disconnect() error
 }
 
-type NatsConsumer struct {
+type AppConsumer struct {
     s stan.Conn
     sub stan.Subscription
-    // st_mode -> from which msg will we start and how
-    // from timestamp or from last position
-    st_mode string
-    last_recv_ts time.Time
-    last_recv_idx uint64
     ask_wt time.Duration
+    dur_name string
+    channel string
+    callback func(msg *stan.Msg)
+    logger *slog.Logger
+    errCh chan<- error
+    ctx context.Context
 }
 
-func (nc *NatsConsumer) SubscribeDurable(ch, dur_name string, cb func(msg *stan.Msg)) error {
-    if ch == "" {
-        return InvChannelName
+func (nc* AppConsumer) SetLogger(l *slog.Logger) {
+    nc.logger = l
+}
+
+// called as go routine separately (inside stan)
+func (nc *AppConsumer) SetStorageOnCallback(s *services.AppStorage) {
+    cons := nc
+    val := valid.New()
+    store := s
+    (*nc).callback = func(msg *stan.Msg) {
+        var ordModel storage.CustomerOrder
+        var errType error
+        log := (*cons).logger
+        if log == nil {
+            // setup logger at place
+            log = slog.New(
+                slog.NewTextHandler(
+                    os.Stdout,
+                    &slog.HandlerOptions{Level: slog.LevelDebug},
+                ),
+            )
+        }
+        mark := "AppConsumer.Callback"
+        select {
+        case <-(*cons).ctx.Done():
+            (*cons).sub.Close()
+            return
+        default:
+            errType = json.Unmarshal((*msg).Data, &ordModel)
+            log.Debug(fmt.Sprintf("%s | data: %+v", mark, ordModel))
+            if errType != nil {
+                errType = fmt.Errorf(
+                "%s: msg_id %d, error: %w",
+                mark,
+                (*msg).Sequence,
+                errType,
+            )
+            }
+            if errType = val.Struct(ordModel); errType != nil {
+                errType = fmt.Errorf(
+                    "%s: msg_id %d, Validation error: %w",
+                    mark,
+                    (*msg).Sequence,
+                    errType,
+                )
+            }
+            if errType != nil {
+                log.Debug(fmt.Sprintf("%s | Error: %+v", mark, errType))
+                select {
+                case (*cons).errCh<- errType:
+                case <-(*cons).ctx.Done():
+                    (*cons).sub.Close()
+                    return
+                }
+            }
+            msg := store.Convert(
+                    (*msg).Sequence,
+                    ordModel.Order_id,
+                    &(*msg).Data,
+                )
+            store.SaveOrder(msg)
+            return
+        }
     }
+}
+
+// will read messages from last received
+func (nc *AppConsumer) RunFromLastReseived() error {
+    mark := "AppConsumer.RunFromLastReseived"
     var sub stan.Subscription
     var subErr error
-    switch (*nc).st_mode {
-    case FromTSMode:
-        sub, subErr = (*nc).s.Subscribe(ch, cb, stan.StartAtTime((*nc).last_recv_ts), stan.DurableName(dur_name))
-        if subErr != nil {
-            return fmt.Errorf("Can`t subscribe on channel %s. Error: %w", ch, subErr)
-        }
-    case FromBegin:
-        sub, subErr = (*nc).s.Subscribe(ch, cb, stan.DeliverAllAvailable(), stan.DurableName(dur_name))
-        if subErr != nil {
-            return fmt.Errorf("Can`t subscribe on channel %s. Error: %w", ch, subErr)
-        }
-    case FromLastReceived:
-        sub, subErr = (*nc).s.Subscribe(ch, cb, stan.StartAtSequence((*nc).last_recv_idx), stan.DurableName(dur_name))
-        if subErr != nil {
-            return fmt.Errorf("Can`t subscribe on channel %s. Error: %w", ch, subErr)
-        }
+    sub, subErr = (*nc).s.Subscribe(
+        (*nc).channel,
+        (*nc).callback,
+        stan.DurableName((*nc).dur_name),
+        stan.StartWithLastReceived(),
+        stan.AckWait((*nc).ask_wt),
+    )
+    if subErr != nil {
+        return fmt.Errorf("%s | Can`t subscribe %s. Error: %w", mark, (*nc).channel, subErr)
     }
     (*nc).sub = sub
     return nil
 }
 
-func (nc *NatsConsumer) Unsubscribe() error {
+// will read messages from timestamp
+func (nc *AppConsumer) RunFromTimestamp(ts time.Time) error {
+    mark := "AppConsumer.RunFromTimestamp"
+    var sub stan.Subscription
+    var subErr error
+    sub, subErr = (*nc).s.Subscribe(
+        (*nc).channel,
+        (*nc).callback,
+        stan.StartAtTime(ts),
+        stan.DurableName((*nc).dur_name),
+        stan.AckWait((*nc).ask_wt),
+    )
+    if subErr != nil {
+        return fmt.Errorf("%s | Can`t subscribe %s. Error: %w", mark, (*nc).channel, subErr)
+    }
+    (*nc).sub = sub
+    return nil
+}
+
+// will read all available messages
+func (nc *AppConsumer) Run() error {
+    mark := "AppConsumer.Run"
+    var sub stan.Subscription
+    var subErr error
+    sub, subErr = (*nc).s.Subscribe(
+        (*nc).channel,
+        (*nc).callback,
+        stan.DeliverAllAvailable(),
+        stan.DurableName((*nc).dur_name),
+        stan.AckWait((*nc).ask_wt),
+    )
+    if subErr != nil {
+        return fmt.Errorf("%s | Can`t subscribe %s. Error: %w", mark, (*nc).channel, subErr)
+    }
+    (*nc).sub = sub
+    return nil
+}
+
+func (nc *AppConsumer) Unsubscribe() error {
+    mark := "AppConsumer.Unsubscribe"
     if (*nc).sub == nil {
         return NoSubscription
     }
-    err := (*nc).Unsubscribe()
+    err := (*nc).sub.Unsubscribe()
     if err != nil {
-        return fmt.Errorf("Can`t unsubscribe. Error: %w", err)
+        return fmt.Errorf("%s | Error: %w", mark, err)
     }
     (*nc).sub = nil
     return nil
 }
 
-func (nc *NatsConsumer) Close() error {
+func (nc *AppConsumer) Disconnect() error {
+    mark := "AppConsumer.Disconnect"
     if (*nc).sub == nil {
         return NoSubscription
     }
-    err := (*nc).Close()
+    err := (*nc).sub.Close()
     if err != nil {
-        return fmt.Errorf("Can`t close subscription. Error: %w", err)
+        return fmt.Errorf("%s | Error: %w", mark, err)
     }
     (*nc).sub = nil
     return nil
 }
 
 
-func NewNatsConsumer(s any) (Subscriber, error) {
-    // s -> means settings for NATS
-    if s.cluster_id == "" || s.client_id == "" {
-        msg := fmt.Sprintf("Invalid creadentials:\n\tCluster: %s\n\tClient: %s", s.cluster_id, s.client_id)
-        return nil, errors.New(msg)
+func NewStanConsumer(
+        ctx *context.Context,
+        errch chan<- error,
+        s *config.StanConfig,
+    ) AppConsumer {
+    mark := "NewStanConsumer"
+    if s.Cluster_id == "" || s.Client_id == "" {
+        msg := fmt.Sprintf(
+            "%s | Invalid creadentials: cluster_id = %s; client_id = %s",
+            mark,
+            s.Cluster_id,
+            s.Client_id,
+        )
+        log.Fatal(msg)
     }
-    conn, err := stan.Connect(s.cluster_id, s.client_id)
+    conn, err := stan.Connect(s.Cluster_id, s.Client_id)
     if err != nil {
-        return nil, fmt.Errorf("Can`t connect to server. Error: %w", err)
+        err = fmt.Errorf("%s | Can`t connect to server. Error: %w", mark, err)
+        log.Fatal(err)
     }
-    return NatsConsumer{
-        conn:               conn,
+    return AppConsumer{
+        s:               conn,
         sub:                nil,
-        st_mode:            s.St_mode,
-        last_recv_ts:       s.Last_recv_ts,
-        last_recv_idx:      uint64(s.Last_recv_idx),
         ask_wt:             s.Ask_wt,
-    }, nil
+        ctx:                *ctx,
+        channel:            s.ChannelName,
+        dur_name:           s.DurableName,
+        errCh:              errch,
+    }
 }
