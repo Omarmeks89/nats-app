@@ -4,16 +4,21 @@ import (
     "fmt"
     "log/slog"
     "context"
+    "time"
+    "os"
+
+    "github.com/jackc/pgx/v5"
 
     "nats_app/internal/storage"
+    "nats_app/internal/storage/psql"
 )
 
 type Token uint8
 
 type Order struct {
-    oid string
+    Oid string
     // payload -> json
-    payload *[]byte
+    Payload *[]byte
 }
 
 type Orders struct {
@@ -38,16 +43,16 @@ type CacheItem struct {
 
 type CustOrder interface {
     Id() interface{}
-    Payload() interface{}
+    GetPayload() interface{}
 }
 
 
 func (o Order) Id() string {
-    return o.oid
+    return o.Oid
 }
 
-func (o Order) Payload() *[]byte {
-    return o.payload
+func (o Order) GetPayload() *[]byte {
+    return o.Payload
 }
 
 func NewOrder(id string, payload *[]byte) Order {
@@ -68,9 +73,9 @@ type StorageInterface interface {
 }
 
 type AppStorage struct {
-    ctx *context.Context
+    ctx context.Context
     db storage.DBAdapter
-    log *slog.Logger
+    log slog.Logger
     wPool chan Token
     outCh chan CacheItem
     errCh chan<- error
@@ -78,48 +83,119 @@ type AppStorage struct {
 
 // biuld new AppStorage
 func NewStorage(
-    ctx *context.Context,
+    ctx context.Context,
     dba storage.DBAdapter,
     pool_size int,
     errch chan<- error,
-    ) *AppStorage {
+    ) AppStorage {
 
     wpool := make(chan Token, pool_size)
+    for i := 0; i < pool_size; i++ {
+        wpool<- Token(i)
+    }
     outCh := make(chan CacheItem)
-    return &AppStorage{
+    return AppStorage{
         ctx:            ctx,
         db:             dba,
         wPool:          wpool,
         outCh:          outCh,
         errCh:          errch,
+        log:            *slog.New(
+                            slog.NewTextHandler(
+                                 os.Stdout,
+                                 &slog.HandlerOptions{Level: slog.LevelDebug},
+                            ),
+                        ),
     }
 }
 
-func (srv *AppStorage) SetLogger(l *slog.Logger) {
-    (*srv).log = l
+func (srv AppStorage) SetLogger(l slog.Logger) {
+    srv.log.Debug("AppStorage logger setup...")
 }
 
 // return channel for items that will 
 // fetch data from db
-func (srv *AppStorage) GetChannel() <-chan CacheItem {
-    return (*srv).outCh
+func (srv AppStorage) GetChannel() <-chan CacheItem {
+    return srv.outCh
 }
 
 // break connection with db
-func (srv *AppStorage) Disconnect() {
+func (srv AppStorage) Disconnect() {
     // NotImplemented
+    srv.db.Disconnect()
 }
 
 // restore cache if we felt down
-func (srv *AppStorage) RestoreCache(records int) {
+func (srv AppStorage) RestoreCache(records int, timeout time.Duration) func() {
     //...
+    mark := "AppStorage.RestoreCache"
+    tmpCtx, cancel := context.WithTimeout(srv.ctx, timeout)
+
+    srv.log.Debug(mark)
+    go func(s AppStorage, ctx context.Context, limit int) {
+
+        var t Token
+        defer func(srv AppStorage, t Token) {s.wPool<- t}(s, t)
+        var offset int
+        var orders []Order
+        var cancel func()
+        query := "SELECT oid, raw_ord FROM orders WHERE evict=$1 ORDER BY seq_idx DESC LIMIT $2 OFFSET $3"
+        batch := int(limit / 10)
+        for i := 0; i < 10; i++ {
+            select {
+            case <-ctx.Done():
+                return
+            case t = <-s.wPool:
+                rows, cancel, err := s.db.FetchMany(query, Evicted, batch, offset)
+                if err != nil {
+                    cancel()
+                    select {
+                    case <-ctx.Done():
+                        return
+                    case s.errCh<- err:
+                        return
+                    }
+                }
+                Rows := rows.(pgx.Rows)
+                for Rows.Next() {
+                    var ord Order
+                    if err := Rows.Scan(&ord.Oid, &ord.Payload); err != nil {
+                        s.log.Error(fmt.Sprintf("Can`t parse data... | %+v", err))
+                        continue
+                    }
+                    orders = append(orders, ord)
+                }
+                offset += batch
+                ords := Orders{items: orders}
+                cItem := CacheItem{kind: AddMany, payload: ords}
+                select {
+                case <-ctx.Done():
+                    cancel()
+                    return
+                case s.outCh<- cItem:
+                    orders = nil
+                }
+            }
+            // we return tokem each iteration
+            select {
+            case s.wPool<- t:
+            case <-ctx.Done():
+                cancel()
+                return
+            }
+        }
+
+        s.log.Debug("Cache restoration finished...")
+    }(srv, tmpCtx, records)
+
+    return cancel
 }
 
-func (srv *AppStorage) TestConnection() (bool, error) {
+func (srv AppStorage) TestConnection() (bool, error) {
     //...
     srv.log.Debug("Ping DB...")
     mark := "AppStorage.TestConnection"
-    err := (*srv).db.Test()
+    err := srv.db.Test()
     if err != nil {
         srv.log.Error(fmt.Sprintf("%s | Error: %+v", mark, err))
         return false, fmt.Errorf("%s | Error: %w", mark, err)
@@ -127,39 +203,41 @@ func (srv *AppStorage) TestConnection() (bool, error) {
     return false, nil
 }
 
-func (srv *AppStorage) Convert(id uint64, oid string, data *[]byte) *NatsMsg {
-    mark := "AppStorage.Convert"
+func (srv AppStorage) Convert(id uint64, oid string, data *[]byte) *NatsMsg {
+    // mark := "AppStorage.Convert"
     o := Order{oid, data}
-    srv.log.Debug(fmt.Sprintf("%s | Order = %+v", mark, o))
+    // srv.log.Debug(fmt.Sprintf("%s | Order = %+v", mark, o))
     return &NatsMsg{id, o}
 }
 
-func (srv *AppStorage) SaveOrder(nm *NatsMsg) {
+func (srv AppStorage) SaveOrder(nm *NatsMsg) {
     
-    o := Order{oid: (*nm).oid, payload: nm.payload}
-    query := fmt.Sprintf("SELECT * FROM orders; %+v", o)
+    o := Order{Oid: (*nm).Oid, Payload: nm.Payload}
+    query := "INSERT INTO orders (oid, raw_ord) VALUES ($1, $2)"
 
-    go func(s *AppStorage, query *string, o *Order) {
+    go func(s AppStorage, query *string, o *Order) {
         var t Token
-        defer func(srv *AppStorage, t Token) {(*s).wPool<- t}(s, t)
+        mark := "AppStorage.SaveOrder"
+        defer func(srv AppStorage, t Token) {s.wPool<- t}(s, t)
         select {
-        case t = <-(*s).wPool:
-            DBErr := (*s).db.Save(*query)
+        case t = <-s.wPool:
+            Cancel, DBErr := s.db.Save(*query, o.Oid, *o.Payload)
             if DBErr != nil {
-                mark := "AppStorage.SaveOrder"
+                Cancel()
                 DBErr = fmt.Errorf("%s: %w", mark, DBErr)
+                errText := fmt.Sprintf("%s [GORO] | Error %s", mark, DBErr.Error())
+                s.log.Error(errText)
                 select {
-                case (*s).errCh<- DBErr:
+                case s.errCh<- DBErr:
+                    return
                 }
             }
-            cItem := CacheItem{AddOne, o}
+            cItem := CacheItem{AddOne, *o}
             select {
-            case <-(*s.ctx).Done():
-                (*s).db.Close()
-            case (*s).outCh<- cItem:
+            case <-s.ctx.Done():
+            case s.outCh<- cItem:
             }
-        case <-(*s.ctx).Done():
-            (*s).db.Close()
+        case <-s.ctx.Done():
         }
         return
     }(srv, &query, &o)
@@ -167,61 +245,84 @@ func (srv *AppStorage) SaveOrder(nm *NatsMsg) {
     return
 }
 
-func (srv *AppStorage) FetchOrder(oid string) <-chan Order {
+func (srv AppStorage) FetchOrder(oid string) Order {
     // make query
-    out := make(chan Order)
-    query := fmt.Sprintf("SELECT payload FROM orders WHERE oid == %s", oid)
 
-    go func(s *AppStorage, oid, query *string) {
-        var t Token
-        defer func(srv *AppStorage, t Token) {(*s).wPool<- t}(s, t)
-        defer close(out)
-        select {
-        case t = <-(*s).wPool:
-            ordr, DBErr := (*s).db.FetchOne(*query)
-            if DBErr != nil {
-                mark := "AppStorage.FetchOrder"
-                DBErr = fmt.Errorf("%s: %w", mark, DBErr)
-                select {
-                case (*s).errCh<- DBErr:
-                }
-            }
+    query := "SELECT oid, raw_ord FROM orders WHERE oid=$1"
+
+    var t Token
+    var ord Order
+    defer func(srv AppStorage, t Token) {srv.wPool<- t}(srv, t)
+    srv.log.Debug(fmt.Sprintf("Connect to db..."))
+    select {
+    case t = <-srv.wPool:
+        fetched := srv.db.FetchOne(query, oid)
+        srv.log.Debug(fmt.Sprintf("Order eftched..."))
+        DBErr := fetched.ParseInto(&ord.Oid, &ord.Payload)
+        if DBErr != nil {
+            mark := "AppStorage.FetchOrder"
+            DBErr = fmt.Errorf("%s: %w", mark, DBErr)
+            srv.log.Debug(fmt.Sprintf("Error... %s", DBErr.Error()))
             select {
-            case <-(*s.ctx).Done():
-                (*s).db.Close()
-            case out<- Order{*oid, &ordr}:
+            case srv.errCh<- DBErr:
+            case <-srv.ctx.Done():
             }
-        case <-(*s.ctx).Done():
-            (*s).db.Close()
         }
-        return
-    }(srv, &oid, &query)
-
-    return out
+    }
+    srv.log.Debug(fmt.Sprintf("Order: %+v, %v", ord, ord))
+    return ord
 }
 
-func (srv *AppStorage) MarkDumped(ch <-chan LogMessage) {
+func (srv AppStorage) MarkDumped(ch <-chan LogMessage, ca func()) {
     // make queries from str array for trans.
-    go func(s *AppStorage, ch <-chan LogMessage) {
-        var t Token
-        mark := "AppStorage.MarkDumpedBG"
-        (*s).log.Debug(fmt.Sprintf("%s | Started...", mark))
-        defer func(s *AppStorage, t Token) {(*s).wPool<- t}(s, t)
-        select {
-        case msg := <-ch:
-            //... handle
-            select {
-            case <-(*s.ctx).Done():
-                return
-            case t = <-(*s).wPool:
-                // start work
-                _ = t
-                _ = msg
-            }
-        case <-(*s.ctx).Done():
-            return
-        }
-    }(srv, ch)
+    // it will be called from <GatCacheSync>
 
+    query := "UPDATE orders SET evict = $2 WHERE oid = '$1'"
+
+    var t Token
+    mark := "AppStorage.MarkDumpedBG"
+    srv.log.Debug(fmt.Sprintf("%s | Started... | Pool %+v, %d", mark, srv.wPool, len(srv.wPool)))
+    defer ca()
+    defer func(s AppStorage, t Token) {srv.wPool<- t}(srv, t)
+    // writer will close channel
+    // or caller close it when ctx will be Done().
+    select {
+    case <-srv.ctx.Done():
+        return
+    case t = <-srv.wPool:
+        // open transaction
+        var Trans psql.Transaction
+        var TrError error
+        Trans, TrError = srv.db.BeginTx()
+        if TrError != nil {
+            select {
+            case <-srv.ctx.Done():
+                return
+            case srv.errCh<- fmt.Errorf("%s | Error %w", mark, TrError):
+                return
+            }
+        }
+        for msg := range ch {
+            switch msg.OpCode() {
+            case Evicted:
+                Trans.AddQuery(query, msg.Payload(), Evicted)
+            case Added:
+                Trans.AddQuery(query, msg.Payload(), Added)
+            default:
+                srv.log.Error(fmt.Sprintf("%s | Unknown op = %d", mark, msg.OpCode()))
+            }
+        }
+        // close transaction
+        TrError = Trans.RunTx()
+        if TrError != nil {
+            srv.log.Debug(fmt.Sprintf("%s | Transaction Rolled back...", mark))
+            Trans.Rollback()
+            select {
+            case <-srv.ctx.Done():
+            case srv.errCh<- fmt.Errorf("%s | Error %w", mark, TrError):
+            }
+        }
+        Trans.Commit()
+    }
     return
 }

@@ -13,7 +13,7 @@ const (
 )
 
 // setup new logger
-func SetupLogger(env string) *slog.Logger {
+func SetupLogger(env string) slog.Logger {
     var logger *slog.Logger
     switch env {
     case LocalEnv:
@@ -40,5 +40,5 @@ func SetupLogger(env string) *slog.Logger {
     default:
         log.Fatal("Env mode not allowed. Use: <local>, <dev> or <prod>.")
     }
-    return logger
+    return *logger
 }

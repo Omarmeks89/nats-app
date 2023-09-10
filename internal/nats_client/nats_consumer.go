@@ -53,19 +53,19 @@ type AppConsumer struct {
     ctx context.Context
 }
 
-func (nc* AppConsumer) SetLogger(l *slog.Logger) {
+func (nc AppConsumer) SetLogger(l *slog.Logger) {
     nc.logger = l
 }
 
 // called as go routine separately (inside stan)
 func (nc *AppConsumer) SetStorageOnCallback(s *services.AppStorage) {
-    cons := nc
+    cons := *nc
     val := valid.New()
-    store := s
-    (*nc).callback = func(msg *stan.Msg) {
+    store := *s
+    nc.callback = func(msg *stan.Msg) {
         var ordModel storage.CustomerOrder
         var errType error
-        log := (*cons).logger
+        log := cons.logger
         if log == nil {
             // setup logger at place
             log = slog.New(
@@ -77,12 +77,11 @@ func (nc *AppConsumer) SetStorageOnCallback(s *services.AppStorage) {
         }
         mark := "AppConsumer.Callback"
         select {
-        case <-(*cons).ctx.Done():
-            (*cons).sub.Close()
+        case <-cons.ctx.Done():
+            cons.sub.Close()
             return
         default:
             errType = json.Unmarshal((*msg).Data, &ordModel)
-            log.Debug(fmt.Sprintf("%s | data: %+v", mark, ordModel))
             if errType != nil {
                 errType = fmt.Errorf(
                 "%s: msg_id %d, error: %w",
@@ -90,21 +89,22 @@ func (nc *AppConsumer) SetStorageOnCallback(s *services.AppStorage) {
                 (*msg).Sequence,
                 errType,
             )
-            }
-            if errType = val.Struct(ordModel); errType != nil {
-                errType = fmt.Errorf(
-                    "%s: msg_id %d, Validation error: %w",
-                    mark,
-                    (*msg).Sequence,
-                    errType,
-                )
+            } else {
+                if errType = val.Struct(ordModel); errType != nil {
+                    errType = fmt.Errorf(
+                        "%s: msg_id %d, Validation error: %w",
+                        mark,
+                        (*msg).Sequence,
+                        errType,
+                    )
+                }
             }
             if errType != nil {
                 log.Debug(fmt.Sprintf("%s | Error: %+v", mark, errType))
                 select {
-                case (*cons).errCh<- errType:
-                case <-(*cons).ctx.Done():
-                    (*cons).sub.Close()
+                case cons.errCh<- errType:
+                case <-cons.ctx.Done():
+                    cons.sub.Close()
                     return
                 }
             }
@@ -114,97 +114,98 @@ func (nc *AppConsumer) SetStorageOnCallback(s *services.AppStorage) {
                     &(*msg).Data,
                 )
             store.SaveOrder(msg)
+            log.Debug("Order send for saving...")
             return
         }
     }
 }
 
 // will read messages from last received
-func (nc *AppConsumer) RunFromLastReseived() error {
+func (nc AppConsumer) RunFromLastReseived() error {
     mark := "AppConsumer.RunFromLastReseived"
     var sub stan.Subscription
     var subErr error
-    sub, subErr = (*nc).s.Subscribe(
-        (*nc).channel,
-        (*nc).callback,
-        stan.DurableName((*nc).dur_name),
+    sub, subErr = nc.s.Subscribe(
+        nc.channel,
+        nc.callback,
+        stan.DurableName(nc.dur_name),
         stan.StartWithLastReceived(),
-        stan.AckWait((*nc).ask_wt),
+        stan.AckWait(nc.ask_wt),
     )
     if subErr != nil {
-        return fmt.Errorf("%s | Can`t subscribe %s. Error: %w", mark, (*nc).channel, subErr)
+        return fmt.Errorf("%s | Can`t subscribe %s. Error: %w", mark, nc.channel, subErr)
     }
-    (*nc).sub = sub
+    nc.sub = sub
     return nil
 }
 
 // will read messages from timestamp
-func (nc *AppConsumer) RunFromTimestamp(ts time.Time) error {
+func (nc AppConsumer) RunFromTimestamp(ts time.Time) error {
     mark := "AppConsumer.RunFromTimestamp"
     var sub stan.Subscription
     var subErr error
-    sub, subErr = (*nc).s.Subscribe(
-        (*nc).channel,
-        (*nc).callback,
+    sub, subErr = nc.s.Subscribe(
+        nc.channel,
+        nc.callback,
         stan.StartAtTime(ts),
-        stan.DurableName((*nc).dur_name),
-        stan.AckWait((*nc).ask_wt),
+        stan.DurableName(nc.dur_name),
+        stan.AckWait(nc.ask_wt),
     )
     if subErr != nil {
-        return fmt.Errorf("%s | Can`t subscribe %s. Error: %w", mark, (*nc).channel, subErr)
+        return fmt.Errorf("%s | Can`t subscribe %s. Error: %w", mark, nc.channel, subErr)
     }
-    (*nc).sub = sub
+    nc.sub = sub
     return nil
 }
 
 // will read all available messages
-func (nc *AppConsumer) Run() error {
+func (nc AppConsumer) Run() error {
     mark := "AppConsumer.Run"
     var sub stan.Subscription
     var subErr error
-    sub, subErr = (*nc).s.Subscribe(
-        (*nc).channel,
-        (*nc).callback,
+    sub, subErr = nc.s.Subscribe(
+        nc.channel,
+        nc.callback,
         stan.DeliverAllAvailable(),
-        stan.DurableName((*nc).dur_name),
-        stan.AckWait((*nc).ask_wt),
+        stan.DurableName(nc.dur_name),
+        stan.AckWait(nc.ask_wt),
     )
     if subErr != nil {
-        return fmt.Errorf("%s | Can`t subscribe %s. Error: %w", mark, (*nc).channel, subErr)
+        return fmt.Errorf("%s | Can`t subscribe %s. Error: %w", mark, nc.channel, subErr)
     }
-    (*nc).sub = sub
+    nc.sub = sub
     return nil
 }
 
-func (nc *AppConsumer) Unsubscribe() error {
+func (nc AppConsumer) Unsubscribe() error {
     mark := "AppConsumer.Unsubscribe"
-    if (*nc).sub == nil {
+    if nc.sub == nil {
         return NoSubscription
     }
-    err := (*nc).sub.Unsubscribe()
+    err := nc.sub.Unsubscribe()
     if err != nil {
         return fmt.Errorf("%s | Error: %w", mark, err)
     }
-    (*nc).sub = nil
+    nc.sub = nil
     return nil
 }
 
-func (nc *AppConsumer) Disconnect() error {
+func (nc AppConsumer) Disconnect() error {
     mark := "AppConsumer.Disconnect"
-    if (*nc).sub == nil {
+    if nc.sub == nil {
         return NoSubscription
     }
-    err := (*nc).sub.Close()
+    err := nc.sub.Close()
     if err != nil {
         return fmt.Errorf("%s | Error: %w", mark, err)
     }
-    (*nc).sub = nil
+    nc.sub = nil
     return nil
 }
 
 
 func NewStanConsumer(
-        ctx *context.Context,
+        ctx context.Context,
         errch chan<- error,
         s *config.StanConfig,
     ) AppConsumer {
@@ -227,7 +228,7 @@ func NewStanConsumer(
         s:               conn,
         sub:                nil,
         ask_wt:             s.Ask_wt,
-        ctx:                *ctx,
+        ctx:                ctx,
         channel:            s.ChannelName,
         dur_name:           s.DurableName,
         errCh:              errch,

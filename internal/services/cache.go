@@ -1,4 +1,4 @@
-package cache
+package services
 
 import (
     "fmt"
@@ -32,18 +32,18 @@ type AppLRUCache struct {
     c *gcache.Cache
     ExpT time.Duration
     Size int
-    On_load func(string) interface{}
-    on_evict func(string, []byte)
-    on_add func(string, []byte)
+    On_load func(string) Order
+    on_evict func(string, *[]byte)
+    on_add func(string, *[]byte)
 }
 
-func (ac *AppLRUCache) Get(key string) (interface{}, error) {
+func (ac *AppLRUCache) Get(key string) (Order, error) {
     var val interface{}
     var err error
     if val, err = (*ac.c).Get(key); err != nil {
-        return nil, fmt.Errorf("%w", err)
+        return Order{}, fmt.Errorf("%w", err)
     }
-    return val, nil
+    return Order{key, val.(*[]byte)}, nil
 }
 
 func (ac *AppLRUCache) Set(key string, val interface{}) (bool, error) {
@@ -70,18 +70,18 @@ func (ac *AppLRUCache) Setex(key string, val interface{}, exp time.Duration) (bo
     return true, nil
 }
 
-func (ac *AppLRUCache) OnEvict(evict func(string, []byte)) *AppLRUCache {
+func (ac *AppLRUCache) OnEvict(evict func(string, *[]byte)) *AppLRUCache {
     (*ac).on_evict = evict
     return ac
 }
 
-func (ac *AppLRUCache) OnAdd(add func(string, []byte)) *AppLRUCache {
+func (ac *AppLRUCache) OnAdd(add func(string, *[]byte)) *AppLRUCache {
     (*ac).on_add = add
     return ac
 }
 
 // set handler for automatically data fetching from DB.
-func (ac *AppLRUCache) OnLoad(loader func(string) interface{}) *AppLRUCache {
+func (ac *AppLRUCache) OnLoad(loader func(string) Order) *AppLRUCache {
     (*ac).On_load = loader
     return ac
 }
@@ -90,10 +90,10 @@ func (ac *AppLRUCache) Build() *AppLRUCache {
     c := gcache.New((*ac).Size).
         LRU().
         EvictedFunc(func(key, value interface{}) {
-            (*ac).on_evict(key.(string), value.([]byte))
+            (*ac).on_evict(key.(string), value.(*[]byte))
         }).
         AddedFunc(func(key, value interface{}) {
-            (*ac).on_add(key.(string), value.([]byte))
+            (*ac).on_add(key.(string), value.(*[]byte))
         }).
         Build()
     (*ac).c = &c

@@ -4,6 +4,8 @@ import (
     "fmt"
     "context"
     "log/slog"
+    "time"
+    "net/http"
 
     "github.com/go-chi/chi/v5"
     "github.com/go-chi/chi/v5/middleware"
@@ -11,7 +13,6 @@ import (
 
     "nats_app/internal/config"
     "nats_app/internal/storage/psql"
-    "nats_app/internal/storage/cache"
     "nats_app/internal/nats_client"
     "nats_app/internal/services"
     api "nats_app/internal/http-server/handlers/api"
@@ -32,7 +33,7 @@ var (
     Storage services.AppStorage
     Consumer nats_client.AppConsumer
     LogStateSync func()
-    logger *slog.Logger
+    logger slog.Logger
 )
 
 // bootstrap
@@ -42,51 +43,51 @@ func init() {
     // we will use logger.Fatal
     Conf = config.MustBuildConfig(AppConfPathKey)
     logger = SetupLogger(Conf.Env)
-    Ctx, Cancel = context.WithTimeout(
+    Ctx, Cancel = context.WithCancel(
         context.Background(),
-        Conf.HTTPConf.ResponseTimeout,
     )
     logger.Info("Bootstrap...")
-    dbAdapter := psql.NewDB(Ctx, &Conf.DBConf)
+    dbAdapter = psql.NewDB(Ctx, &Conf.DBConf)
+    dbAdapter.SetLogger(&logger)
 
     logger.Debug("Connection to db created...")
     psql.Ping(dbAdapter)
 
     logger.Debug("DB answered...")
     PoolSize := Conf.StoragePoolSize
-    Storage := services.NewStorage(&Ctx, *dbAdapter, PoolSize, ErrCh)
+    Storage = services.NewStorage(Ctx, *dbAdapter, PoolSize, ErrCh)
     Storage.SetLogger(logger)
 
-    Consumer := nats_client.NewStanConsumer(&Ctx, ErrCh, &Conf.StanConf)
-    Consumer.SetStorageOnCallback(Storage)
-    Consumer.SetLogger(logger)
+    Consumer = nats_client.NewStanConsumer(Ctx, ErrCh, &Conf.StanConf)
+    Consumer.SetStorageOnCallback(&Storage)
+    Consumer.SetLogger(&logger)
 
     // setup Cache
-    LRUCache := cache.NewLRUCache(&Conf.CacheConf).
+    LRUCache := services.NewLRUCache(&Conf.CacheConf).
         OnEvict(
-            func(key string, val []byte) {
+            func(key string, val *[]byte) {
                 Cache.MarkEvicted(key)
                 return
             },
         ).
         OnAdd(
-            func(key string, val []byte) {
+            func(key string, val *[]byte) {
                 Cache.MarkAdded(key)
             },
         ).
-        OnLoad(func(key string) interface{} {
-            out := Storage.FetchOrder(key)
-            for ord := range out {
-                return ord
-            }
-            return nil
+        OnLoad(func(key string) services.Order {
+            return Storage.FetchOrder(key)
         }).
         Build()
     Cache = services.NewCacheService(&Ctx, ErrCh, LRUCache)
-    Cache.SetLogger(logger)
+    Cache.SetLogger(&logger)
+
+    // we will call this func from main 
+    // to sync cache with db
     LogStateSync = Cache.GetCacheSync(
-        func(c <-chan services.LogMessage) {
-            Storage.MarkDumped(c)
+        Conf.TSUpdateInterval,
+        func(c <-chan services.LogMessage, ca func()) {
+            Storage.MarkDumped(c, ca)
             return
         },
     )
@@ -102,7 +103,7 @@ func init() {
 func on_shutdown(cancel func()) {
     //...
     logger.Info("Stopping services...")
-    cancel()
+    defer cancel()
 
     logger.Info("Disconnection...")
     err := Consumer.Disconnect()
@@ -122,14 +123,17 @@ func main () {
 
     logger.Debug("Run services...")
     Cache.Run()
-    LogStateSync()
 
     logger.Debug("Checking start mode...")
-    if F, Crashed := utils.CheckCrashes(); Crashed != nil {
+    if Crashed := services.CheckCrashed(); Crashed {
         logger.Debug("Start in rebuild mode...")
         // now we send errors to errChannel
-        Storage.RestoreCache(Conf.RestoreRecordsLimit)
-        LastTimestamp, _ := utils.GetTimestamp(F)
+        Storage.RestoreCache(Conf.RestoreRecordsLimit, Conf.TSUpdateInterval)
+        LastTimestamp, TSErr:= services.GetPreviousTS(&logger)
+        if TSErr != nil {
+            logger.Error(fmt.Sprintf("Error %s", TSErr.Error()))
+            return
+        }
         err := Consumer.RunFromTimestamp(LastTimestamp)
         if err != nil {
             logger.Error(fmt.Sprintf("Error on consumer start: %s", err.Error()))
@@ -137,9 +141,9 @@ func main () {
         }
     } else {
         logger.Debug("Start in normal mode...")
-        _, FileCreationErr := utils.FixStartup()
+        FileCreationErr := services.MakeNewTSFile(&logger)
         if FileCreationErr != nil {
-            logger.Error(FileCreationErr)
+            logger.Error(fmt.Sprintf("Error: %+v", FileCreationErr))
             return
         } else {
             err := Consumer.Run()
@@ -149,21 +153,23 @@ func main () {
             }
         }
     }
-    utils.RunTimestampWriting(&Conf.TSUpdateInterval, Errors)
 
     logger.Debug("Setup routers...")
     router := chi.NewRouter()
     router.Use(middleware.RequestID)
     router.Use(middleware.Recoverer)
-    router.Get("/orders", api.GetOrder(logger, RequestValidator, &Cache))
+    router.Get("/orders", api.GetOrder(RequestValidator, &Cache, Storage))
+    go http.ListenAndServe(":8000", router)
 
     // main loop
+    ticker := time.NewTicker(Conf.TSUpdateInterval)
+    var tstamp time.Time
     for {
         logger.Info("Running...")
         select {
         case intError = <-Errors:
             logger.Error(fmt.Sprintf("main | Error: %s", intError.Error()))
-            var DBCritical *app_errors.DBConnectionLost
+            var DBCritical *services.DBConnectionLost
             switch intError {
                 case DBCritical: 
                     if _, err := Storage.TestConnection(); err != nil {
@@ -171,11 +177,15 @@ func main () {
                         return
                     }
                     logger.Info("DB connection found...")
-            default:
-                break
+                default:
+                    logger.Error(fmt.Sprintf("[MAIN] Trapped: %v | %+v", intError, intError))
+                    break
             }
+        case tstamp = <-ticker.C:
+            // sync cache with db
+            // write new ts into .created file
+            LogStateSync()
+            services.UpdateTimestamp(tstamp, &logger)
         }
     }
-    logger.Info("Shutting down...")
-    return
 }

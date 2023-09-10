@@ -2,34 +2,45 @@ package api
 
 import (
     "net/http"
-    // "github.com/go-chi/chi/v5"
+    "log/slog"
+    "encoding/json"
+    "os"
+
     "github.com/go-chi/render"
     "github.com/go-chi/chi/v5/middleware"
     "github.com/go-playground/validator/v10"
-    "log/slog"
+
     "nats_app/internal/services"
+    "nats_app/internal/storage"
 )
 
 // we send only OrderId
 type Request struct {
-    OrderId string `json:"order_id"`
+    OrderId string `json:"order_uid"`
 }
 
 type Response struct {
     // Fields by default
     RespReport
+    CustomerOrder storage.CustomerOrder
 }
 
 // get order by id
 func GetOrder(
-    logger *slog.Logger,
     v *validator.Validate,
     ca *services.AppCache,
+    s services.AppStorage,
     ) http.HandlerFunc {
     return func(wr http.ResponseWriter, req *http.Request) {
         // const for idenfication
         const loc = "api.handlers"
         // setup call location & request_id for search
+        logger := slog.New(
+            slog.NewTextHandler(
+                os.Stdout,
+                &slog.HandlerOptions{Level: slog.LevelDebug},
+            ),
+        )
         logger = logger.With(
             slog.String("loc", loc),
             slog.String("request_id", middleware.GetReqID(req.Context())),
@@ -51,16 +62,15 @@ func GetOrder(
         }
         // try fetch data from cache
         order, err := (*ca).Get(request.OrderId)
-        if err != nil {
-            logger.Error("Invalid order_id", err)
-            render.JSON(wr, req, "order_id not found")
-            return
-        }
-        _ = order
-        logger.Info("order found.")
+        // if err != nil {
+        //    order = s.FetchOrder(request.OrderId)
+        //}
+        var cOrder storage.CustomerOrder
+        json.Unmarshal(*order.Payload, &cOrder)
+        logger.Error("order found.")
         render.JSON(wr, req, Response{
             RespReport: RespReport{},
-            // Order: order,
+            CustomerOrder: cOrder,
         })
         return
     }

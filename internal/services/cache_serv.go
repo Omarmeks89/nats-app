@@ -7,8 +7,6 @@ import (
     "log/slog"
     "sync"
     "time"
-
-    "nats_app/internal/storage/cache"
 )
 
 const (
@@ -54,18 +52,30 @@ type CacheLog struct {
 func (el *CacheLog) Dump(ctx *context.Context, in chan<- LogMessage, l *slog.Logger) {
     (*el).lock.Lock()
     mark := "CacheLod.Dump"
-    l.Debug(fmt.Sprintf("%s | Locked, run dump...", mark))
-    defer (*el).lock.Unlock()
-    for i := uint32(0); i < (*el).size; i++ {
+    l.Debug(fmt.Sprintf("%s | Locked, run dump... | %d", mark, len((*el).records)))
+    if (*el).records == nil {
         select {
-        case in<- (*el).records[i]:
-            (*el).size--
+        case in<- CacheLogMessage{2, ""}:
+            return
         case <-(*ctx).Done():
             l.Debug(fmt.Sprintf("%s | Cancelled...", mark))
+            return
         }
     }
+    defer (*el).lock.Unlock()
+    for i := uint32(0); i < uint32(len((*el).records) - 1); i++ {
+        select {
+        case in<- (*el).records[i]:
+        case <-(*ctx).Done():
+            l.Debug(fmt.Sprintf("%s | Cancelled...", mark))
+            return
+        }
+    }
+    // this brach caller can`t close channel
+    defer close(in)
     (*el).records = nil
     l.Debug(fmt.Sprintf("%s | Dumped %v ...", mark, (*el).records))
+    return
 }
 
 func (el *CacheLog) LogEvicted(val string) error {
@@ -109,14 +119,14 @@ type AppCache struct {
     dump_it time.Duration
     income <-chan CacheItem
     errCh chan<- error
-    c *cache.AppLRUCache
+    c *AppLRUCache
     evLog *CacheLog
 }
 
 func NewCacheService(
     ctx *context.Context,
     errch chan<- error,
-    cache *cache.AppLRUCache,
+    cache *AppLRUCache,
     ) AppCache {
     return AppCache{
         ctx:            ctx,
@@ -177,28 +187,28 @@ func (ca *AppCache) Run() {
     }(ca)
 }
 
-func (ca *AppCache) GetCacheSync(cb func(<-chan LogMessage)) func() {
+func (ca *AppCache) GetCacheSync(it time.Duration, cb func(<-chan LogMessage, func())) func() {
     // evicted and added dump service
+    // <main> func use ticker for
+    // call this func and sync objects states in DB.
     return func() {
         dump_ch := make(chan LogMessage)
         call := cb
-        go func(c *AppCache, dump chan LogMessage, cb func(<-chan LogMessage)) {
+        intvl := it
+        go func(c *AppCache, dump chan LogMessage, cb func(<-chan LogMessage, func()), i time.Duration) {
             mark := "AppCache.DumpBackground"
             (*c).log.Debug(mark)
-
-            ticker := time.NewTicker((*c).dump_it)
-            defer ticker.Stop()
-            for {
-                select {
-                case <- ticker.C:
-                    (*c).log.Debug(fmt.Sprintf("%s | Run cache dump...", mark))
-                    go (*c).evLog.Dump(c.ctx, dump, c.log)
-                    cb(dump)
-                case <-(*c.ctx).Done():
-                    return
-                }
+            select {
+            case <-(*c.ctx).Done():
+                defer close(dump_ch)
+                return
+            default:
+                (*c).log.Debug(fmt.Sprintf("%s | Run cache dump...", mark))
+                tmpCtx, cancel := context.WithTimeout(*c.ctx, i)
+                go cb(dump, cancel)
+                go (*c).evLog.Dump(&tmpCtx, dump, c.log)
             }
-        }(ca, dump_ch, call)
+        }(ca, dump_ch, call, intvl)
     }
 }
 
@@ -209,7 +219,7 @@ func (ca *AppCache) SetOne(item CacheItem) error {
         return errors.New(msg)
     }
     msg := item.payload.(Order)
-    _, err := (*ca).c.Setex(msg.Id(), msg.Payload(), (*ca).c.ExpT)
+    _, err := (*ca).c.Setex(msg.Id(), msg.GetPayload(), (*ca).c.ExpT)
     if err != nil {
         return fmt.Errorf("%s, error %w", mark, err)
     }
@@ -224,8 +234,7 @@ func (ca *AppCache) SetMany(item CacheItem) error {
     }
     orders := item.payload.(Orders)
     for _, order := range orders.GetItems() {
-        (*ca.log).Debug(fmt.Sprintf("%s | Order = %+v", mark, order))
-        _, err := (*ca).c.Setex(order.oid, order.payload, (*ca).c.ExpT)
+        _, err := (*ca).c.Setex(order.Oid, order.Payload, (*ca).c.ExpT)
         if err != nil {
             return fmt.Errorf("%s: error %w", mark, err)
         }
@@ -240,17 +249,12 @@ func (ca *AppCache) Get(key string) (Order, error) {
         msg := fmt.Sprintf("%s, error Cache not set.", mark)
         return Order{}, errors.New(msg)
     }
-    ordr, err := (*ca).Get(key)
+    ord, err := (*ca).c.Get(key)
     if err != nil {
         // if no key, we have to fetch them from db
-        if (*ca).c.On_load == nil {
-            return Order{}, fmt.Errorf("%s, error %w", mark, err)
-        }
-        from_db := (*ca).c.On_load(key)
-        if from_db == nil {
-            return Order{}, fmt.Errorf("%s, error %w", mark, err)
-        }
-        return from_db.(Order), nil
+        ordr := (*ca).c.On_load(key)
+        (*ca).c.Setex(ordr.Oid, ordr.Payload, (*ca).c.ExpT)
+        return ordr, nil
     }
-    return ordr, nil
+    return ord, nil
 }
