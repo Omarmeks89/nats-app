@@ -53,6 +53,7 @@ func (el *CacheLog) Dump(ctx *context.Context, in chan<- LogMessage, l *slog.Log
     (*el).lock.Lock()
     mark := "CacheLod.Dump"
     l.Debug(fmt.Sprintf("%s | Locked, run dump... | %d", mark, len((*el).records)))
+    defer (*el).lock.Unlock()
     if (*el).records == nil {
         select {
         case in<- CacheLogMessage{2, ""}:
@@ -62,7 +63,6 @@ func (el *CacheLog) Dump(ctx *context.Context, in chan<- LogMessage, l *slog.Log
             return
         }
     }
-    defer (*el).lock.Unlock()
     for i := uint32(0); i < uint32(len((*el).records) - 1); i++ {
         select {
         case in<- (*el).records[i]:
