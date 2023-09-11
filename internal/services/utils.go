@@ -25,7 +25,6 @@ func MakeNewTSFile(log *slog.Logger) error {
     ts := time.Now()
     writer := bufio.NewWriter(file)
     bytes, err := ts.MarshalBinary()
-    log.Error(fmt.Sprintf("%v created bytes", bytes))
     if err != nil {
         log.Error("Can`t Marshal ts to bytes...")
         return errors.New("Error in TS Marshal")
@@ -54,7 +53,6 @@ func UpdateTimestamp(t time.Time, log *slog.Logger) error {
 }
 
 func GetPreviousTS(log *slog.Logger) (time.Time, error) {
-    log.Debug("GetPreviousTS")
     file, err := os.OpenFile(TSFilePath, os.O_RDWR, 0666)
     if err != nil {
         log.Error(fmt.Sprintf("Path %s not exists.", TSFilePath))

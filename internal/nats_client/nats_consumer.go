@@ -103,6 +103,7 @@ func (nc *AppConsumer) SetStorageOnCallback(s *services.AppStorage) {
                 log.Debug(fmt.Sprintf("%s | Error: %+v", mark, errType))
                 select {
                 case cons.errCh<- errType:
+                    return
                 case <-cons.ctx.Done():
                     cons.sub.Close()
                     return

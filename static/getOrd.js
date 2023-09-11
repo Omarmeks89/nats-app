@@ -12,7 +12,7 @@ async function getOrder() {
         await loadDataFromServer(ordUID.value);
     }
 
-    function clearForm(formId) {
+    function clearForm(event) {
     }
 
     myForm.addEventListener('submit', getFormValue);

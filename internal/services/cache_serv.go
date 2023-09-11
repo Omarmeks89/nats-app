@@ -14,6 +14,7 @@ const (
     AddMany string = "add_many"
     Evicted uint8 = 1
     Added uint8 = 0
+    EmptyLog uint8 = 2
 )
 
 type ConcurrentLog interface {
@@ -56,10 +57,10 @@ func (el *CacheLog) Dump(ctx *context.Context, in chan<- LogMessage, l *slog.Log
     defer (*el).lock.Unlock()
     if (*el).records == nil {
         select {
-        case in<- CacheLogMessage{2, ""}:
+        case in<- CacheLogMessage{EmptyLog, ""}:
             return
         case <-(*ctx).Done():
-            l.Debug(fmt.Sprintf("%s | Cancelled...", mark))
+            l.Debug(fmt.Sprintf("%s | Empty cache log...", mark))
             return
         }
     }
