@@ -8,6 +8,7 @@ import (
     "net/http"
 
     "github.com/go-chi/chi/v5"
+    "github.com/go-chi/cors"
     "github.com/go-chi/chi/v5/middleware"
     "github.com/go-playground/validator/v10"
 
@@ -156,9 +157,17 @@ func main () {
 
     logger.Debug("Setup routers...")
     router := chi.NewRouter()
+    cors := cors.New(cors.Options{
+	AllowedOrigins:   []string{"*"},
+	AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
+	AllowedHeaders:   []string{"X-PINGOTHER", "Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+	AllowCredentials: true,
+	MaxAge:           300,
+    })
+    router.Use(cors.Handler)
     router.Use(middleware.RequestID)
     router.Use(middleware.Recoverer)
-    router.Get("/orders", api.GetOrder(RequestValidator, &Cache, Storage))
+    router.Post("/orders", api.GetOrder(RequestValidator, &Cache, Storage))
     go http.ListenAndServe(":8000", router)
 
     // main loop

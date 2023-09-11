@@ -1,0 +1,34 @@
+<!doctype html>
+<!-- meta info -->
+<html lang="ru">
+    <head>
+         <!-- page encoding -->
+         <meta charset="UTF-8">
+         <title>WB_L0</title>
+         <!-- adaptive -->
+         <meta name="viewport" content="width=device-width, initial-scale=1">
+    </head>
+    <body>
+        <!-- create a form -->
+        <form name="ord_lookup" id="ord_uid_form" autocomplete="on">
+        <br>
+        <br>
+        <!-- group a fielset -->
+        <fieldset>
+            <tt><h1>Посмотреть заказ</h1></tt>
+        <!-- elements -->
+        <tt><label for="order_uid">Введите номер заказа</label></tt>
+        <!-- we will save inputet orders -->
+        <input id="order_uid" type="text" name="ordField" list="prev_ord_uids">
+            <datalist id="prev_ord_uids"></datalist>
+        <input type="submit" value="Найти">
+        <input type="reset" value="Очистить">
+        </fieldset>
+        </form><br>
+        <form name="ord_data" id="ord_data">
+        </form>
+        <script src="getOrd.js"></script>
+    </body>
+</html>
+
+
