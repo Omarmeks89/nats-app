@@ -19,11 +19,11 @@ const (
 )
 
 func main() {
-    fmt.Println("Consumer configuring...")
-    mark := "Stan-consumer.Main"
+    fmt.Println("Publisher configuring...")
+    mark := "Stan-publisher.Main"
     logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
     Handler := func(Nuid string, err error) {
-        mark := "Stan-consumer.Handler"
+        mark := "Stan-publisher.Handler"
         fmt.Printf("%s | nuid = %s\n", mark, Nuid)
     }
     logger.Debug("Logger configured...")

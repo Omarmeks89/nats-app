@@ -303,12 +303,15 @@ func (srv AppStorage) MarkDumped(ch <-chan LogMessage, ca func()) {
                 Trans.AddQuery(query, string(msg.Payload()), Evicted)
             case Added:
                 Trans.AddQuery(query, string(msg.Payload()), Added)
+            case EmptyLog:
+                Trans.Rollback()
+                return
             default:
                 srv.log.Error(fmt.Sprintf("%s | Unknown op = %d", mark, msg.OpCode()))
                 Trans.Rollback()
                 select {
                 case <-srv.ctx.Done():
-                case srv.errCh<- fmt.Errorf("%s | Unknown opcode", mark):
+                case srv.errCh<- fmt.Errorf("%s | Unknown opcode %d", mark, msg.OpCode()):
                     return
                 }
             }
