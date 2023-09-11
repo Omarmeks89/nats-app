@@ -1,0 +1,36 @@
+env: "local" # [+] dev, prod
+encoding: "utf-8"
+api_version: "0.1.0"
+on_panic: "reload" # reload / die
+storage_pool_size: 8
+timestamp_interval: 1m
+restore_rec_limit: 256
+
+http_server:
+  port: "8000"
+  host: "localhost"
+  resp_timeout: 5s
+  keep_alive: true
+  alive_time: 60s # keep connection with client alive 60s
+
+dbengine:
+  driver: "postgres"
+  port: "5432"
+  host: "localhost"
+  dbname: "napp_db"
+  passwd: "N1ats0"
+  db_admin: "nats_app_admin"
+  max_pool: 4
+  timeout: 5s
+  conn_retry: 3
+
+stan_server:
+  ask_wait: 5s
+  channel_name: "orders"
+  durable_name: "WB_ord_consumer"
+  cluster_id: "local"
+  client_id: "Omarmeks89"
+
+memcache:
+  size: 2048
+  expiration_time: 3m

@@ -102,19 +102,21 @@ func (tr *Transaction) AddQuery(q string, args ...any) error {
 }
 
 func (tr *Transaction) RunTx() error {
-    // var Err error
+    var Err error
     tr.log.Info("Run transaction (SendBatch)...")
-    // mark := "PostgreDB.RunTx"
+    mark := "PostgreDB.RunTx"
     if tr.Tx == nil {
         return errors.New("RTX | No opened transactions...")
     }
     br := tr.Tx.SendBatch(tr.Ctx, tr.Batch)
-    br.Exec()
-    // if Err = br.Close(); Err != nil {
-    //    Err = fmt.Errorf("%s | Error on Batch %w", mark, Err)
-    // }
-    br.Close()
-    return nil
+    if _, Err = br.Exec(); Err != nil {
+        Err = fmt.Errorf("%s | Error on Batch.Exec() %w", mark, Err)
+    }
+    CloseErr := br.Close()
+    if CloseErr != nil {
+        Err = fmt.Errorf("%s | Error on Batch.Close() %w", mark, Err)
+    }
+    return Err
 }
 
 func (tr *Transaction) Commit() error {

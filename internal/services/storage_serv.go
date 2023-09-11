@@ -121,7 +121,6 @@ func (srv AppStorage) GetChannel() <-chan CacheItem {
 
 // break connection with db
 func (srv AppStorage) Disconnect() {
-    // NotImplemented
     srv.db.Disconnect()
 }
 
@@ -204,9 +203,7 @@ func (srv AppStorage) TestConnection() (bool, error) {
 }
 
 func (srv AppStorage) Convert(id uint64, oid string, data *[]byte) *NatsMsg {
-    // mark := "AppStorage.Convert"
     o := Order{oid, data}
-    // srv.log.Debug(fmt.Sprintf("%s | Order = %+v", mark, o))
     return &NatsMsg{id, o}
 }
 
@@ -249,18 +246,16 @@ func (srv AppStorage) FetchOrder(oid string) Order {
     // make query
 
     query := "SELECT oid, raw_ord FROM orders WHERE oid=$1"
+    mark := "AppStorage.FetchOrder"
 
     var t Token
     var ord Order
     defer func(srv AppStorage, t Token) {srv.wPool<- t}(srv, t)
-    srv.log.Debug(fmt.Sprintf("Connect to db..."))
     select {
     case t = <-srv.wPool:
         fetched := srv.db.FetchOne(query, oid)
-        srv.log.Debug(fmt.Sprintf("Order eftched..."))
         DBErr := fetched.ParseInto(&ord.Oid, &ord.Payload)
         if DBErr != nil {
-            mark := "AppStorage.FetchOrder"
             DBErr = fmt.Errorf("%s: %w", mark, DBErr)
             srv.log.Debug(fmt.Sprintf("Error... %s", DBErr.Error()))
             select {
@@ -269,7 +264,7 @@ func (srv AppStorage) FetchOrder(oid string) Order {
             }
         }
     }
-    srv.log.Debug(fmt.Sprintf("Order: %+v, %v", ord, ord))
+    srv.log.Debug(fmt.Sprintf("%s | Order [%s] found", mark, oid))
     return ord
 }
 
@@ -277,7 +272,7 @@ func (srv AppStorage) MarkDumped(ch <-chan LogMessage, ca func()) {
     // make queries from str array for trans.
     // it will be called from <GatCacheSync>
 
-    query := "UPDATE orders SET evict = $2 WHERE oid = '$1'"
+    query := "UPDATE orders SET evict = $2 WHERE oid = $1"
 
     var t Token
     mark := "AppStorage.MarkDumpedBG"
@@ -305,11 +300,17 @@ func (srv AppStorage) MarkDumped(ch <-chan LogMessage, ca func()) {
         for msg := range ch {
             switch msg.OpCode() {
             case Evicted:
-                Trans.AddQuery(query, msg.Payload(), Evicted)
+                Trans.AddQuery(query, string(msg.Payload()), Evicted)
             case Added:
-                Trans.AddQuery(query, msg.Payload(), Added)
+                Trans.AddQuery(query, string(msg.Payload()), Added)
             default:
                 srv.log.Error(fmt.Sprintf("%s | Unknown op = %d", mark, msg.OpCode()))
+                Trans.Rollback()
+                select {
+                case <-srv.ctx.Done():
+                case srv.errCh<- fmt.Errorf("%s | Unknown opcode", mark):
+                    return
+                }
             }
         }
         // close transaction

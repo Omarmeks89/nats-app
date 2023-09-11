@@ -34,6 +34,7 @@ func GetOrder(
     return func(wr http.ResponseWriter, req *http.Request) {
         // const for idenfication
         const loc = "api.handlers"
+        var cOrder storage.CustomerOrder
         // setup call location & request_id for search
         logger := slog.New(
             slog.NewTextHandler(
@@ -62,12 +63,12 @@ func GetOrder(
         }
         // try fetch data from cache
         order, err := (*ca).Get(request.OrderId)
-        // if err != nil {
-        //    order = s.FetchOrder(request.OrderId)
-        //}
-        var cOrder storage.CustomerOrder
+        if err != nil {
+            logger.Error("No same order", err)
+            render.JSON(wr, req, "No same order")
+            return
+        }
         json.Unmarshal(*order.Payload, &cOrder)
-        logger.Error("order found.")
         render.JSON(wr, req, Response{
             RespReport: RespReport{},
             CustomerOrder: cOrder,

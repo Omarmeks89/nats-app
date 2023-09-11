@@ -1,0 +1,23 @@
+# Nats-server config
+listen: "127.0.0.1:4222"
+streaming: {
+  cluster_id: "local"
+  sd: true
+  sv: true
+  hb_interval: 30s
+  hb_timeout: 5s
+  hb_fail_count: 3
+  store_limits: {
+    max_channels: 4
+    max_msgs: 40000
+    max_bytes: 256MB
+    channels: {
+      "orders": {
+        max_msgs: 10000
+        max_bytes: 64MB
+        max_age: 24h
+        max_inactivity: 24h
+        }
+      }
+    }
+  }

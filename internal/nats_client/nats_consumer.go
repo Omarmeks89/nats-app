@@ -108,13 +108,14 @@ func (nc *AppConsumer) SetStorageOnCallback(s *services.AppStorage) {
                     return
                 }
             }
-            msg := store.Convert(
+            msgForStorage := store.Convert(
                     (*msg).Sequence,
                     ordModel.Order_id,
                     &(*msg).Data,
                 )
-            store.SaveOrder(msg)
-            log.Debug("Order send for saving...")
+            store.SaveOrder(msgForStorage)
+            report := fmt.Sprintf("%s | Order sent to DB. Client [%s], MsgNum [%d]...", mark, (*msg).Subject, (*msg).Sequence) 
+            log.Debug(report)
             return
         }
     }
