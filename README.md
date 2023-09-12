@@ -26,3 +26,4 @@
 
 Ниже схема работы приложения:
 
+[![NATS-APP-SCHEME.jpg](https://i.postimg.cc/7L8rM2b2/NATS-APP-SCHEME.jpg)](https://postimg.cc/mPwnThYL)
